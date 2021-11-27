@@ -1,0 +1,54 @@
+image: docker:latest
+services:
+  - docker:dind
+
+stages:
+  - build
+  - config
+  - deploy
+
+variables:
+  DOCKER_IMAGE_VERSION: akhilrajmailbox/demo-data-collector:${CI_COMMIT_SHORT_SHA}
+  DOCKER_IMAGE_LATEST: akhilrajmailbox/demo-data-collector:latest
+  CITY_ID: "3077311"
+  BUCKET_NAME: "public-web-content-s3"
+  K8S_NAMESPACE: "dev-ns"
+
+docker-build:
+  stage: build
+  script:
+    - docker login -u ${DOCKER_HUB_USER} -p ${DOCKER_HUB_PASSWORD}
+    - docker build -t ${DOCKER_IMAGE_VERSION} .
+    - docker tag ${DOCKER_IMAGE_VERSION} ${DOCKER_IMAGE_LATEST}
+    - docker push ${DOCKER_IMAGE_VERSION}
+    - docker push ${DOCKER_IMAGE_LATEST}
+
+k8s-config:
+  stage: config
+  script:
+    - sed -i "s|WEATHER_API_KEY_VALUE|${WEATHER_API_KEY}|g" K8s/k8s-configmap.yml
+    - sed -i "s|CITY_ID_VALUE|${CITY_ID}|g" K8s/k8s-configmap.yml
+    - sed -i "s|BUCKET_NAME_VALUE|${BUCKET_NAME}|g" K8s/k8s-configmap.yml
+    - sed -i "s|AWS_ACCESS_KEY_ID_VALUE|${AWS_ACCESS_KEY_ID}|g" K8s/k8s-configmap.yml
+    - sed -i "s|AWS_SECRET_ACCESS_KEY_VALUE|${AWS_SECRET_ACCESS_KEY}|g" K8s/k8s-configmap.yml
+    - sed -i "s|DEPLOYMENT_TIME_VALUE|`date +%F--%H-%M-%S`|g" K8s/k8s-cron.yml
+    - sed -i "s|DOCKER_IMAGE_VALUE|${DOCKER_IMAGE_VERSION}|g" K8s/k8s-cron.yml
+  artifacts:
+    paths:
+      - K8s/k8s-configmap.yml
+      - K8s/k8s-cron.yml
+
+k8s-deploy:
+  stage: deploy
+  image: dtzar/helm-kubectl
+  script:
+    - kubectl config set-cluster k8s --server="${K8S_SERVER}"
+    - kubectl config set clusters.k8s.certificate-authority-data ${K8S_CERTIFICATE_AUTHORITY_DATA}
+    - kubectl config set-credentials gitlab --token="${K8S_USER_TOKEN}"
+    - kubectl config set-context default --cluster=k8s --user=gitlab
+    - kubectl config use-context default
+    - kubectl create ns ${K8S_NAMESPACE} || echo "Namespace ${K8S_NAMESPACE} already available"
+    - kubectl -n ${K8S_NAMESPACE} apply -f K8s/k8s-configmap.yml
+    - kubectl -n ${K8S_NAMESPACE} apply -f K8s/k8s-cron.yml
+  dependencies:
+    - k8s-config
